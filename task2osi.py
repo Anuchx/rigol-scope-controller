@@ -24,7 +24,7 @@ VDIV_STEPS = [
     ("1 V", 1.0), ("2 V", 2.0), ("5 V", 5.0), ("10 V", 10.0),
 ]
 
-# time/div ของ MSO1000Z: 5 ns/div ถึง 10 s/div
+# time/div ของ MSO1000Z: 5 ns/div ถึง 50 s/div
 TDIV_STEPS = [
     ("5 ns", 5e-9), ("10 ns", 1e-8), ("20 ns", 2e-8), ("50 ns", 5e-8),
     ("100 ns", 1e-7), ("200 ns", 2e-7), ("500 ns", 5e-7),
@@ -41,11 +41,22 @@ COUPLING_MODES = ["DC", "AC", "GND"]
 
 # สีประจำ channel ตามหน้าจอ scope จริง
 CHANNEL_COLORS = {
-    1: "#c9a227",   # เหลือง
-    2: "#2e9e9e",   # ฟ้า
-    3: "#c04585",   # ชมพู
-    4: "#4a76c4",   # น้ำเงิน
+    1: "#e8c547",   # เหลือง
+    2: "#3fc4c4",   # ฟ้า
+    3: "#e0559e",   # ชมพู
+    4: "#5b8fe0",   # น้ำเงิน
 }
+
+# ---------- palette ของ GUI ----------
+BG = "#f2f4f8"
+CARD = "#ffffff"
+INK = "#1f2937"
+MUTED = "#6b7280"
+LINE = "#d9dee7"
+TERM_BG = "#161b26"
+TERM_FG = "#d5dbe8"
+OK = "#2e8043"
+BAD = "#b3453f"
 
 
 class ScopeController:
@@ -151,55 +162,134 @@ class ScopeController:
     def get_time_offset(self):
         return float(self.query(":TIM:OFFS?"))
 
+    # ---------- measurements ----------
+
+    def measure(self, channel="CHAN1"):
+        """
+        อ่านค่าวัดพื้นฐานของ channel ที่ระบุ คืนเป็น dict
+        9.9E+37 คือค่าที่ scope คืนมาเมื่อวัดไม่ได้ (ไม่มีสัญญาณ)
+        """
+        if not self.is_connected():
+            raise RuntimeError("ยังไม่ได้ connect")
+
+        items = [
+            ("Vpp", ":MEAS:VPP?", "V"),
+            ("Vmax", ":MEAS:VMAX?", "V"),
+            ("Vmin", ":MEAS:VMIN?", "V"),
+            ("Vavg", ":MEAS:VAVG?", "V"),
+            ("Vrms", ":MEAS:VRMS?", "V"),
+            ("Freq", ":MEAS:FREQ?", "Hz"),
+            ("Period", ":MEAS:PER?", "s"),
+            ("Duty", ":MEAS:PDUT?", "%"),
+        ]
+
+        results = {}
+        for name, cmd, unit in items:
+            try:
+                value = float(self.query(f"{cmd} {channel}"))
+
+                # scope คืน 9.9E+37 เมื่อวัดค่านั้นไม่ได้
+                if value >= 9.9e37:
+                    results[name] = ("---", unit)
+                elif unit == "%":
+                    # scope คืน 0.5 = 50% ไม่ต้องเติม prefix
+                    results[name] = (f"{value * 100:.2f}", unit)
+                else:
+                    results[name] = (fmt_value(value), unit)
+
+            except Exception:
+                results[name] = ("error", unit)
+
+        return results
+
+
+def fmt_value(v):
+    """แปลงเลขให้อ่านง่าย เติม prefix m/u/n/k/M ตามขนาด"""
+    a = abs(v)
+    if a == 0:
+        return "0"
+    if a >= 1e6:
+        return f"{v / 1e6:.3f} M"
+    if a >= 1e3:
+        return f"{v / 1e3:.3f} k"
+    if a >= 1:
+        return f"{v:.3f} "
+    if a >= 1e-3:
+        return f"{v * 1e3:.3f} m"
+    if a >= 1e-6:
+        return f"{v * 1e6:.3f} u"
+    return f"{v * 1e9:.3f} n"
+
 
 def nearest_step(value, steps):
     """หา step ที่ใกล้ค่าที่ให้มาที่สุด คืน label ของ step นั้น"""
     return min(steps, key=lambda s: abs(s[1] - value))[0]
 
 
-class ChannelPanel(ttk.LabelFrame):
+class ChannelPanel(ttk.Frame):
     """
     การ์ดควบคุม 1 channel มีปุ่มเปิด/ปิด, V/div, offset, coupling
     แยกเป็นคลาสเพราะต้องสร้าง 4 ชุดเหมือนกัน
     """
 
     def __init__(self, parent, app, ch):
-        super().__init__(parent, text=f"CH{ch}", padding=8)
+        super().__init__(parent, style="Card.TFrame", padding=(10, 8))
         self.app = app
         self.ch = ch
+        self.color = CHANNEL_COLORS[ch]
         self._build()
 
     def _build(self):
         self.columnconfigure(1, weight=1)
 
-        # checkbox เปิด/ปิดการแสดงผลบนหน้าจอ scope
-        self.on_var = tk.BooleanVar(value=(self.ch == 1))
-        ttk.Checkbutton(self, text="Display", variable=self.on_var,
-                        command=self.on_toggle).grid(row=0, column=0,
-                                                     columnspan=2, sticky="w",
-                                                     pady=(0, 4))
+        # แถบสีประจำ channel ทางซ้าย ทำให้แยก channel ออกจากกันได้ด้วยสายตา
+        stripe = tk.Frame(self, bg=self.color, width=4)
+        stripe.grid(row=0, column=0, rowspan=4, sticky="ns", padx=(0, 10))
 
-        # V/div เป็น combobox เพราะ scope รับเฉพาะ step 1-2-5
-        ttk.Label(self, text="V/div").grid(row=1, column=0, sticky="w")
+        # หัวการ์ด: ชื่อ channel + สวิตช์เปิด/ปิด
+        head = ttk.Frame(self, style="Card.TFrame")
+        head.grid(row=0, column=1, sticky="ew", pady=(0, 6))
+        head.columnconfigure(1, weight=1)
+
+        tk.Label(head, text=f"CH{self.ch}", bg=CARD, fg=self.color,
+                 font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w")
+
+        self.on_var = tk.BooleanVar(value=(self.ch == 1))
+        ttk.Checkbutton(head, text="Display", variable=self.on_var,
+                        command=self.on_toggle,
+                        style="Switch.TCheckbutton").grid(row=0, column=2, sticky="e")
+
+        # V/div
+        row = ttk.Frame(self, style="Card.TFrame")
+        row.grid(row=1, column=1, sticky="ew", pady=2)
+        ttk.Label(row, text="V/div", width=7,
+                  style="Small.TLabel").pack(side="left")
         self.vdiv_var = tk.StringVar(value="1 V")
-        vdiv = ttk.Combobox(self, textvariable=self.vdiv_var, width=8,
+        vdiv = ttk.Combobox(row, textvariable=self.vdiv_var, width=9,
                             state="readonly", values=[s[0] for s in VDIV_STEPS])
-        vdiv.grid(row=1, column=1, sticky="ew", pady=1)
+        vdiv.pack(side="left", fill="x", expand=True)
         vdiv.bind("<<ComboboxSelected>>", lambda e: self.on_vdiv())
 
-        # Offset ป้อนค่าเองได้เพราะเป็นค่าต่อเนื่อง ไม่ใช่ step
-        ttk.Label(self, text="Offset").grid(row=2, column=0, sticky="w")
+        # Offset - ป้อนค่าเองได้เพราะเป็นค่าต่อเนื่อง ไม่ใช่ step
+        row = ttk.Frame(self, style="Card.TFrame")
+        row.grid(row=2, column=1, sticky="ew", pady=2)
+        ttk.Label(row, text="Offset", width=7,
+                  style="Small.TLabel").pack(side="left")
         self.offset_var = tk.StringVar(value="0")
-        offs = ttk.Entry(self, textvariable=self.offset_var, width=8)
-        offs.grid(row=2, column=1, sticky="ew", pady=1)
+        offs = ttk.Entry(row, textvariable=self.offset_var, width=8)
+        offs.pack(side="left", fill="x", expand=True)
         offs.bind("<Return>", lambda e: self.on_offset())
+        ttk.Label(row, text="V", style="Small.TLabel").pack(side="left", padx=(4, 0))
 
         # Coupling
-        ttk.Label(self, text="Coupling").grid(row=3, column=0, sticky="w")
+        row = ttk.Frame(self, style="Card.TFrame")
+        row.grid(row=3, column=1, sticky="ew", pady=2)
+        ttk.Label(row, text="Coupling", width=7,
+                  style="Small.TLabel").pack(side="left")
         self.coup_var = tk.StringVar(value="DC")
-        coup = ttk.Combobox(self, textvariable=self.coup_var, width=8,
+        coup = ttk.Combobox(row, textvariable=self.coup_var, width=9,
                             state="readonly", values=COUPLING_MODES)
-        coup.grid(row=3, column=1, sticky="ew", pady=1)
+        coup.pack(side="left", fill="x", expand=True)
         coup.bind("<<ComboboxSelected>>", lambda e: self.on_coupling())
 
     # ---------- event ของ channel นี้ ----------
@@ -251,73 +341,124 @@ class App:
         self.channels = {}          # เก็บ ChannelPanel ทั้ง 4
 
         root.title("RIGOL Scope Controller")
-        root.geometry("940x680")
-        root.minsize(880, 620)
+        root.geometry("1020x720")
+        root.minsize(940, 660)
+        root.configure(bg=BG)
 
+        self._setup_style()
         self._build_ui()
         self.log("พร้อมใช้งาน กด SEARCH เพื่อหา instruments")
+
+    def _setup_style(self):
+        """ตั้งธีมกลางไว้ที่เดียว จะได้ไม่ต้องใส่สีซ้ำทุก widget"""
+        st = ttk.Style()
+        st.theme_use("clam")
+
+        st.configure("TFrame", background=BG)
+        st.configure("Card.TFrame", background=CARD, relief="flat")
+        st.configure("TLabel", background=BG, foreground=INK)
+        st.configure("Card.TLabel", background=CARD, foreground=INK)
+        st.configure("Small.TLabel", background=CARD, foreground=MUTED,
+                     font=("Segoe UI", 9))
+        st.configure("Head.TLabel", background=BG, foreground=MUTED,
+                     font=("Segoe UI", 9, "bold"))
+        st.configure("Title.TLabel", background=BG, foreground=INK,
+                     font=("Segoe UI", 15, "bold"))
+
+        st.configure("TButton", padding=(10, 5))
+        st.configure("Accent.TButton", padding=(10, 5),
+                     background="#3b6fd4", foreground="#ffffff",
+                     borderwidth=0, focuscolor="none")
+        st.map("Accent.TButton", background=[("active", "#2f5cb0")])
+
+        st.configure("Switch.TCheckbutton", background=CARD, foreground=INK)
+        st.configure("TCheckbutton", background=CARD)
+        st.configure("Treeview", rowheight=24, fieldbackground=CARD,
+                     background=CARD)
+        st.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
+        st.configure("TNotebook", background=BG, borderwidth=0)
+        st.configure("TNotebook.Tab", padding=(14, 7))
 
     # ---------- โครงหลัก ----------
 
     def _build_ui(self):
-        self.root.columnconfigure(0, weight=1)   # ฝั่งซ้ายยืดได้
-        self.root.rowconfigure(0, weight=1)
+        self.root.columnconfigure(0, weight=3)   # ฝั่งซ้ายกว้างกว่า
+        self.root.columnconfigure(1, weight=0)   # ฝั่งขวาความกว้างคงที่
+        self.root.rowconfigure(1, weight=1)
 
-        left = ttk.Frame(self.root, padding=(10, 10, 5, 10))
-        left.grid(row=0, column=0, sticky="nsew")
+        self._build_header()
+        self._build_left()
+        self._build_right()
+
+    def _build_header(self):
+        bar = ttk.Frame(self.root, padding=(14, 10, 14, 6))
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        bar.columnconfigure(1, weight=1)
+
+        ttk.Label(bar, text="RIGOL Scope Controller",
+                  style="Title.TLabel").grid(row=0, column=0, sticky="w")
+
+        # จุดสถานะ + ข้อความ อยู่มุมขวาบน เห็นได้ตลอดเวลา
+        badge = ttk.Frame(bar)
+        badge.grid(row=0, column=2, sticky="e")
+        self.dot = tk.Canvas(badge, width=10, height=10, bg=BG,
+                             highlightthickness=0)
+        self.dot_id = self.dot.create_oval(1, 1, 9, 9, fill=BAD, outline="")
+        self.dot.pack(side="left", padx=(0, 6))
+        self.status_label = ttk.Label(badge, text="DISCONNECTED",
+                                      foreground=BAD,
+                                      font=("Segoe UI", 9, "bold"))
+        self.status_label.pack(side="left")
+
+    def _build_left(self):
+        left = ttk.Frame(self.root, padding=(14, 0, 7, 12))
+        left.grid(row=1, column=0, sticky="nsew")
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(1, weight=1)
         left.rowconfigure(2, weight=1)
-
-        right = ttk.Frame(self.root, padding=(5, 10, 10, 10))
-        right.grid(row=0, column=1, sticky="ns")
+        left.rowconfigure(3, weight=1)
 
         self._build_connection(left)
         self._build_command(left)
+        self._build_tabs(left)
         self._build_log(left)
 
-        self._build_channels(right)
-        self._build_timebase(right)
-        self._build_acquisition(right)
-
     def _build_connection(self, parent):
-        frame = ttk.LabelFrame(parent, text="Instrument Connection", padding=8)
-        frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        frame.columnconfigure(0, weight=1)
+        ttk.Label(parent, text="CONNECTION",
+                  style="Head.TLabel").grid(row=0, column=0, sticky="w",
+                                            pady=(0, 4))
+        card = ttk.Frame(parent, style="Card.TFrame", padding=10)
+        card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        card.columnconfigure(0, weight=1)
 
-        # readonly = เลือกได้จาก list ที่ search เจอ พิมพ์เองไม่ได้
         self.device_var = tk.StringVar()
-        self.device_combo = ttk.Combobox(frame, textvariable=self.device_var,
-                                         state="readonly", font=("Consolas", 9))
-        self.device_combo.grid(row=0, column=0, columnspan=4, sticky="ew",
-                               pady=(0, 6))
+        self.device_combo = ttk.Combobox(card, textvariable=self.device_var,
+                                         state="readonly",
+                                         font=("Consolas", 9))
+        self.device_combo.grid(row=0, column=0, columnspan=3, sticky="ew",
+                               pady=(0, 8))
 
-        ttk.Button(frame, text="SEARCH", width=11,
+        ttk.Button(card, text="SEARCH", width=11,
                    command=self.on_search).grid(row=1, column=0, sticky="w")
-
-        self.btn_connect = ttk.Button(frame, text="CONNECT", width=11,
+        self.btn_connect = ttk.Button(card, text="CONNECT", width=11,
+                                      style="Accent.TButton",
                                       command=self.on_connect)
-        self.btn_connect.grid(row=1, column=1, padx=4)
-
-        # เริ่มต้น disabled เพราะยังไม่มีอะไรให้ disconnect
-        self.btn_disconnect = ttk.Button(frame, text="DISCONNECT", width=12,
+        self.btn_connect.grid(row=1, column=1, padx=6)
+        self.btn_disconnect = ttk.Button(card, text="DISCONNECT", width=12,
                                          command=self.on_disconnect,
                                          state="disabled")
-        self.btn_disconnect.grid(row=1, column=2, padx=4)
-
-        self.status_label = ttk.Label(frame, text="DISCONNECTED",
-                                      foreground="#a33",
-                                      font=("Segoe UI", 9, "bold"))
-        self.status_label.grid(row=1, column=3, sticky="e", padx=(8, 0))
+        self.btn_disconnect.grid(row=1, column=2)
 
     def _build_command(self, parent):
-        frame = ttk.LabelFrame(parent, text="SCPI Command", padding=8)
-        frame.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(1, weight=1)
+        ttk.Label(parent, text="SCPI CONSOLE",
+                  style="Head.TLabel").grid(row=2, column=0, sticky="sw",
+                                            pady=(0, 4))
+        card = ttk.Frame(parent, style="Card.TFrame", padding=10)
+        card.grid(row=2, column=0, sticky="nsew", pady=(18, 10))
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(1, weight=1)
 
-        row = ttk.Frame(frame)
-        row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        row = ttk.Frame(card, style="Card.TFrame")
+        row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         row.columnconfigure(0, weight=1)
 
         self.entry = ttk.Entry(row, font=("Consolas", 10))
@@ -325,73 +466,133 @@ class App:
         self.entry.grid(row=0, column=0, sticky="ew")
         self.entry.bind("<Return>", lambda e: self.on_send())   # Enter = SEND
 
-        ttk.Button(row, text="SEND", width=8,
+        ttk.Button(row, text="SEND", width=8, style="Accent.TButton",
                    command=self.on_send).grid(row=0, column=1, padx=(6, 0))
         ttk.Button(row, text="CLEAR", width=8,
-                   command=self.on_clear).grid(row=0, column=2, padx=(4, 0))
+                   command=self.on_clear).grid(row=0, column=2, padx=(6, 0))
 
-        self.response = scrolledtext.ScrolledText(frame, height=8,
+        self.response = scrolledtext.ScrolledText(card, height=5,
                                                   font=("Consolas", 9),
-                                                  bg="#1e2530", fg="#d8dee8",
-                                                  insertbackground="#d8dee8")
+                                                  bg=TERM_BG, fg=TERM_FG,
+                                                  insertbackground=TERM_FG,
+                                                  relief="flat", bd=0)
         self.response.grid(row=1, column=0, sticky="nsew")
 
-    def _build_log(self, parent):
-        frame = ttk.LabelFrame(parent, text="System Log", padding=8)
-        frame.grid(row=2, column=0, sticky="nsew")
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(0, weight=1)
+    def _build_tabs(self, parent):
+        nb = ttk.Notebook(parent)
+        nb.grid(row=3, column=0, sticky="nsew", pady=(0, 10))
 
+        tab = ttk.Frame(nb, style="Card.TFrame", padding=10)
+        nb.add(tab, text="  Measurements  ")
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
+
+        top = ttk.Frame(tab, style="Card.TFrame")
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Label(top, text="Channel", style="Small.TLabel").pack(side="left",
+                                                                  padx=(0, 6))
+        self.chan_var = tk.StringVar(value="CHAN1")
+        ttk.Combobox(top, textvariable=self.chan_var, width=8, state="readonly",
+                     values=["CHAN1", "CHAN2", "CHAN3", "CHAN4"]).pack(
+            side="left", padx=(0, 10))
+        ttk.Button(top, text="MEASURE", width=11, style="Accent.TButton",
+                   command=self.on_measure).pack(side="left")
+
+        # Treeview เหมาะกับข้อมูลเป็นคู่ชื่อ-ค่า
+        self.meas_tree = ttk.Treeview(tab, columns=("value", "unit"),
+                                      show="tree headings", height=7)
+        self.meas_tree.heading("#0", text="Parameter")
+        self.meas_tree.heading("value", text="Value")
+        self.meas_tree.heading("unit", text="Unit")
+        self.meas_tree.column("#0", width=130, anchor="w")
+        self.meas_tree.column("value", width=130, anchor="e")
+        self.meas_tree.column("unit", width=60, anchor="w")
+        self.meas_tree.grid(row=1, column=0, sticky="nsew")
+
+        # scrollbar เผื่อพื้นที่ไม่พอแสดงครบ 8 รายการ
+        sb = ttk.Scrollbar(tab, orient="vertical", command=self.meas_tree.yview)
+        sb.grid(row=1, column=1, sticky="ns")
+        self.meas_tree.configure(yscrollcommand=sb.set)
+
+    def _build_log(self, parent):
+        ttk.Label(parent, text="SYSTEM LOG",
+                  style="Head.TLabel").grid(row=4, column=0, sticky="w",
+                                            pady=(0, 4))
         # disabled = user แก้ไม่ได้ code จะ enable ชั่วคราวตอนเขียน
-        self.log_box = scrolledtext.ScrolledText(frame, height=8,
+        self.log_box = scrolledtext.ScrolledText(parent, height=6,
                                                  font=("Consolas", 8),
-                                                 state="disabled")
-        self.log_box.grid(row=0, column=0, sticky="nsew")
+                                                 state="disabled",
+                                                 relief="flat", bd=0,
+                                                 bg=CARD, fg=INK)
+        self.log_box.grid(row=5, column=0, sticky="ew")
 
     # ---------- ฝั่งขวา: channel + timebase ----------
 
-    def _build_channels(self, parent):
-        """สร้างการ์ดควบคุม 4 channel วนลูปเพราะหน้าตาเหมือนกันหมด"""
-        for ch in (1, 2, 3, 4):
-            panel = ChannelPanel(parent, self, ch)
-            panel.grid(row=ch - 1, column=0, sticky="ew", pady=(0, 6))
+    def _build_right(self):
+        right = ttk.Frame(self.root, padding=(7, 0, 14, 12))
+        right.grid(row=1, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+
+        ttk.Label(right, text="VERTICAL",
+                  style="Head.TLabel").grid(row=0, column=0, sticky="w",
+                                            pady=(0, 4))
+
+        # การ์ด channel 4 ใบเรียงลงมา
+        for i, ch in enumerate((1, 2, 3, 4), start=1):
+            panel = ChannelPanel(right, self, ch)
+            panel.grid(row=i, column=0, sticky="ew", pady=(0, 6))
             self.channels[ch] = panel
 
+        ttk.Label(right, text="HORIZONTAL",
+                  style="Head.TLabel").grid(row=5, column=0, sticky="w",
+                                            pady=(6, 4))
+        self._build_timebase(right)
+
+        ttk.Label(right, text="ACQUISITION",
+                  style="Head.TLabel").grid(row=7, column=0, sticky="w",
+                                            pady=(6, 4))
+        self._build_acquisition(right)
+
     def _build_timebase(self, parent):
-        frame = ttk.LabelFrame(parent, text="Horizontal", padding=8)
-        frame.grid(row=4, column=0, sticky="ew", pady=(0, 6))
-        frame.columnconfigure(1, weight=1)
+        card = ttk.Frame(parent, style="Card.TFrame", padding=(10, 8))
+        card.grid(row=6, column=0, sticky="ew")
+        card.columnconfigure(1, weight=1)
 
         # time/div เป็น step เหมือน V/div เลยใช้ combobox
-        ttk.Label(frame, text="Time/div").grid(row=0, column=0, sticky="w")
+        ttk.Label(card, text="Time/div", width=8,
+                  style="Small.TLabel").grid(row=0, column=0, sticky="w", pady=2)
         self.tdiv_var = tk.StringVar(value="1 ms")
-        tdiv = ttk.Combobox(frame, textvariable=self.tdiv_var, width=8,
+        tdiv = ttk.Combobox(card, textvariable=self.tdiv_var, width=9,
                             state="readonly", values=[s[0] for s in TDIV_STEPS])
-        tdiv.grid(row=0, column=1, sticky="ew", pady=1)
+        tdiv.grid(row=0, column=1, sticky="ew", pady=2)
         tdiv.bind("<<ComboboxSelected>>", lambda e: self.on_tdiv())
 
         # offset เป็นค่าต่อเนื่อง ป้อนเองได้
-        ttk.Label(frame, text="Offset").grid(row=1, column=0, sticky="w")
+        ttk.Label(card, text="Offset", width=8,
+                  style="Small.TLabel").grid(row=1, column=0, sticky="w", pady=2)
         self.toffs_var = tk.StringVar(value="0")
-        toffs = ttk.Entry(frame, textvariable=self.toffs_var, width=8)
-        toffs.grid(row=1, column=1, sticky="ew", pady=1)
+        toffs = ttk.Entry(card, textvariable=self.toffs_var, width=9)
+        toffs.grid(row=1, column=1, sticky="ew", pady=2)
         toffs.bind("<Return>", lambda e: self.on_time_offset())
+        ttk.Label(card, text="s", style="Small.TLabel").grid(row=1, column=2,
+                                                             padx=(4, 0))
 
     def _build_acquisition(self, parent):
-        frame = ttk.LabelFrame(parent, text="Acquisition", padding=8)
-        frame.grid(row=5, column=0, sticky="ew")
-        frame.columnconfigure(0, weight=1)
-        frame.columnconfigure(1, weight=1)
+        card = ttk.Frame(parent, style="Card.TFrame", padding=(10, 8))
+        card.grid(row=8, column=0, sticky="ew")
+        card.columnconfigure(0, weight=1)
+        card.columnconfigure(1, weight=1)
 
-        ttk.Button(frame, text="RUN / STOP",
-                   command=self.on_run_stop).grid(row=0, column=0, columnspan=2,
-                                                  sticky="ew", pady=(0, 4))
-        ttk.Button(frame, text="AUTO",
-                   command=self.on_autoscale).grid(row=1, column=0, sticky="ew",
-                                                   padx=(0, 2))
-        ttk.Button(frame, text="SYNC",
-                   command=self.on_sync).grid(row=1, column=1, sticky="ew",
-                                              padx=(2, 0))
+        self.btn_runstop = ttk.Button(card, text="RUN / STOP",
+                                      style="Accent.TButton",
+                                      command=self.on_run_stop)
+        self.btn_runstop.grid(row=0, column=0, columnspan=2, sticky="ew",
+                              pady=(0, 6))
+
+        ttk.Button(card, text="AUTO", command=self.on_autoscale).grid(
+            row=1, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(card, text="SYNC", command=self.on_sync).grid(
+            row=1, column=1, sticky="ew", padx=(3, 0))
 
     # ---------- helper ----------
 
@@ -424,13 +625,15 @@ class App:
             return False
 
     def set_status(self, connected):
-        """update status label และสลับว่าปุ่มไหน enable"""
+        """update status badge และสลับว่าปุ่มไหน enable"""
         if connected:
-            self.status_label.config(text="CONNECTED", foreground="#2e8043")
+            self.status_label.config(text="CONNECTED", foreground=OK)
+            self.dot.itemconfig(self.dot_id, fill=OK)
             self.btn_connect.config(state="disabled")
             self.btn_disconnect.config(state="normal")
         else:
-            self.status_label.config(text="DISCONNECTED", foreground="#a33")
+            self.status_label.config(text="DISCONNECTED", foreground=BAD)
+            self.dot.itemconfig(self.dot_id, fill=BAD)
             self.btn_connect.config(state="normal")
             self.btn_disconnect.config(state="disabled")
 
@@ -525,10 +728,7 @@ class App:
                        f"Time offset = {seconds} s")
 
     def on_sync(self):
-        """
-        อ่านค่าจริงจาก scope มาใส่ widget ให้ตรงกัน
-        จำเป็นเพราะถ้าไปหมุนปุ่มที่ตัว scope เอง GUI จะไม่รู้
-        """
+        """อ่านค่าจริงทั้งหมดจาก scope มาใส่ widget ให้ตรงกัน"""
         if not self.ctrl.is_connected():
             self.log("ยังไม่ได้ connect")
             return
@@ -543,6 +743,27 @@ class App:
 
         except Exception as e:
             self.log(f"Sync ไม่สำเร็จ: {e}")
+
+    def on_measure(self):
+        """อ่านค่าวัดทั้งหมดจาก channel ที่เลือก มาใส่ตาราง"""
+        channel = self.chan_var.get()
+        self.log(f"กำลังวัดค่าจาก {channel}...")
+        self.root.update()      # ให้ log แสดงก่อน GUI ค้างระหว่างรอ
+
+        try:
+            results = self.ctrl.measure(channel)
+
+            # ล้างตารางเดิมก่อนใส่ค่าใหม่
+            for item in self.meas_tree.get_children():
+                self.meas_tree.delete(item)
+
+            for name, (value, unit) in results.items():
+                self.meas_tree.insert("", "end", text=name, values=(value, unit))
+
+            self.log(f"วัดค่าเสร็จ {len(results)} รายการ")
+
+        except Exception as e:
+            self.log(f"วัดค่าไม่สำเร็จ: {e}")
 
     def on_clear(self):
         self.response.delete("1.0", "end")
