@@ -155,6 +155,9 @@ measure()                    อ่านค่าวัดทั้งหมด
 
 <img src="screenshots/idn_response.png" width="700">
 
+**หน้าจอ oscilloscope ขณะทดสอบ** — สัญญาณ 1 kHz ที่ CH1
+
+<img src="screenshots/scope_waveform.jpg" width="700">
 ```
 RIGOL TECHNOLOGIES,MSO1104Z,DS1ZC191100353,00.04.05.SP2
 ```
